@@ -7,6 +7,16 @@
 #include <TlHelp32.h>
 #include <filesystem>
 
+#define LUA_VM_LOAD_ADDRESS 0xaf18a0
+#define LUA_PUSHVFSTRING_ADDRESS 0x2efc312
+#define TASK_SPAWN_ADDRESS 0xe42830
+#define GET_LUA_STATE_ADDRESS 0xd35d80
+
+// Function pointer signatures (These will be used to interact with the Lua VM)
+typedef void(__fastcall* LuaVMLoad)(uintptr_t L, const char* source, const char* chunk_name, int env);
+typedef uintptr_t(__fastcall* LuaPushVFString)(uintptr_t L, const char* fmt, va_list argp);
+typedef uintptr_t(__fastcall* TaskSpawn)(uintptr_t L);
+
 // Function to get the process ID by process name
 DWORD GetProcessIdByName(const std::wstring& processName) {
     PROCESSENTRY32 pe32;
@@ -25,27 +35,14 @@ DWORD GetProcessIdByName(const std::wstring& processName) {
             // Compare the process name (with the correct file extension)
             if (pe32.szExeFile == processName) {
                 CloseHandle(hSnapshot);
-                return pe32.th32ProcessID;  // Return the process ID
+                return pe32.th32ProcessID;
             }
         } while (Process32Next(hSnapshot, &pe32));
     }
 
-    // If the process isn't found
     CloseHandle(hSnapshot);
-    std::cerr << "Process not found!" << std::endl;
     return 0;
 }
-
-// Function pointer signatures (These will be used to interact with the Lua VM)
-typedef void(__fastcall* LuaVMLoad)(uintptr_t L, const char* source, const char* chunk_name, int env);
-typedef uintptr_t(__fastcall* LuaPushVFString)(uintptr_t L, const char* fmt, va_list argp);
-typedef uintptr_t(__fastcall* TaskSpawn)(uintptr_t L);
-
-// Define memory addresses of Lua functions in Roblox
-#define LUA_VM_LOAD_ADDRESS 0xaf18a0
-#define LUA_PUSHVFSTRING_ADDRESS 0x2efc312
-#define TASK_SPAWN_ADDRESS 0xe42830
-#define GET_LUA_STATE_ADDRESS 0xd35d80
 
 // Helper function to read memory from the process
 uintptr_t ReadMemory(HANDLE hProcess, uintptr_t address) {
@@ -89,26 +86,42 @@ void RunLuaConsole(HANDLE hProcess, uintptr_t luaStateAddress) {
 }
 
 // Function to initialize Lua environment by injecting init.lua script
-void InitializeLuaEnvironment(HANDLE hProcess, uintptr_t luaStateAddress, const std::string& initLuaPath) {
-    // Read the init.lua file into memory
-    std::ifstream initLuaFile(initLuaPath);
-    std::string initLuaScript((std::istreambuf_iterator<char>(initLuaFile)),
-                               std::istreambuf_iterator<char>());
+void InitializeLuaEnvironment(HANDLE hProcess, uintptr_t luaStateAddress) {
+    // Load init.lua from the executable's resource section
+    HRSRC hRes = FindResource(NULL, MAKEINTRESOURCE(IDR_INIT_LUA), L"RCDATA");
+    if (hRes == NULL) {
+        std::cerr << "Failed to find init.lua resource!" << std::endl;
+        return;
+    }
+
+    // Load the resource into memory
+    HGLOBAL hResData = LoadResource(NULL, hRes);
+    if (hResData == NULL) {
+        std::cerr << "Failed to load init.lua resource!" << std::endl;
+        return;
+    }
+
+    // Get a pointer to the resource data
+    LPVOID pResData = LockResource(hResData);
+    DWORD dwSize = SizeofResource(NULL, hRes);
     
+    // Convert resource data to string
+    std::string initLuaScript(static_cast<char*>(pResData), dwSize);
+
     // Inject the init.lua script into the target process
     InjectLuaScript(hProcess, luaStateAddress, initLuaScript);
 }
 
 // Main function to execute Lua code in the game process
 int main() {
-    // Get the process ID of RobloxPlayerBeta.exe
-    DWORD processID = GetProcessIdByName(L"RobloxPlayerBeta.exe");  // Use the correct process name for Roblox
+    // Get the process ID for Roblox
+    DWORD processID = GetProcessIdByName(L"RobloxPlayerBeta.exe"); // Change this to the correct executable name
     if (processID == 0) {
-        std::cerr << "Failed to find Roblox process!" << std::endl;
+        std::cerr << "Failed to find process!" << std::endl;
         return 1;
     }
 
-    // Open the target Roblox process
+    // Open the target process
     HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, processID);
     if (hProcess == NULL) {
         std::cerr << "Failed to open process!" << std::endl;
@@ -119,8 +132,7 @@ int main() {
     uintptr_t luaStateAddress = ReadMemory(hProcess, GET_LUA_STATE_ADDRESS);
 
     // Initialize Lua environment by injecting the init.lua script
-    std::string initLuaPath = "init.lua";  // Path to the init.lua script (same folder as the executable)
-    InitializeLuaEnvironment(hProcess, luaStateAddress, initLuaPath);
+    InitializeLuaEnvironment(hProcess, luaStateAddress);
 
     // Launch Lua console for interactive execution
     RunLuaConsole(hProcess, luaStateAddress);
