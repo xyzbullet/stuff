@@ -1,1 +1,4 @@
-#include "init.lua"
+#include "windows.h"
+
+// icuminniggas
+IDR_INIT_LUA RCDATA "init.lua"
